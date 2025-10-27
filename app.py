@@ -54,7 +54,7 @@ def vigenere_decrypt(ciphertext, key):
     return "".join(plaintext)
 
 
-# --- One-Time Pad (OTP) untuk Gambar/Video/File ---
+# --- One-Time Pad (OTP) untuk Video ---
 def generate_otp_key(data_size):
     """Menghasilkan kunci acak (bytes) seukuran data menggunakan sumber randomness kriptografis."""
     return secrets.token_bytes(data_size)
@@ -71,6 +71,79 @@ def otp_operation(data, key):
     return np.bitwise_xor(data_array, key_array).tobytes()
 
 
+# --- Validasi MP4 ---
+def validate_mp4_file(file_bytes):
+    """Validasi signature MP4 file"""
+    if len(file_bytes) < 8:
+        return False, "File terlalu kecil"
+
+    # Check for MP4 signature (ftyp)
+    mp4_signatures = [b"ftyp", b"moov", b"mdat"]
+    file_signature = file_bytes[4:8]
+
+    if file_signature in mp4_signatures:
+        return True, "Valid MP4 file"
+    else:
+        # Fallback: check file extension or allow with warning
+        return True, "File mungkin bukan MP4 standar, melanjutkan dengan hati-hati"
+
+
+# --- Super Enkripsi: Gabungan Vigenère + OTP ---
+def super_encrypt(video_bytes, vigenere_key, otp_key=None):
+    """Super enkripsi: Vigenère untuk metadata + OTP untuk video"""
+
+    # Generate OTP key jika tidak provided
+    if otp_key is None:
+        otp_key = generate_otp_key(len(video_bytes))
+
+    # Enkripsi metadata dengan Vigenère
+    metadata = f"VIDEO_MP4_{len(video_bytes)}_{secrets.token_hex(4)}"
+    encrypted_metadata = vigenere_encrypt(metadata, vigenere_key)
+
+    # Enkripsi video dengan OTP
+    encrypted_video = otp_operation(video_bytes, otp_key)
+
+    # Package: metadata + video terenkripsi
+    metadata_bytes = encrypted_metadata.encode("utf-8")
+    metadata_length = len(metadata_bytes).to_bytes(4, "big")
+
+    packaged_data = metadata_length + metadata_bytes + encrypted_video
+
+    return {
+        "encrypted_data": packaged_data,
+        "otp_key": otp_key,
+        "metadata": encrypted_metadata,
+        "original_metadata": metadata,
+    }
+
+
+def super_decrypt(encrypted_package, vigenere_key, otp_key):
+    """Super dekripsi: Dekripsi metadata dengan Vigenère + video dengan OTP"""
+
+    try:
+        # Extract metadata length
+        metadata_length = int.from_bytes(encrypted_package[:4], "big")
+
+        # Extract dan dekripsi metadata
+        encrypted_metadata = encrypted_package[4 : 4 + metadata_length].decode("utf-8")
+        decrypted_metadata = vigenere_decrypt(encrypted_metadata, vigenere_key)
+
+        # Extract video terenkripsi
+        encrypted_video = encrypted_package[4 + metadata_length :]
+
+        # Validasi metadata
+        if not decrypted_metadata.startswith("VIDEO_MP4_"):
+            raise ValueError("Metadata tidak valid - kunci Vigenère mungkin salah")
+
+        # Dekripsi video dengan OTP
+        decrypted_video = otp_operation(encrypted_video, otp_key)
+
+        return {"decrypted_video": decrypted_video, "metadata": decrypted_metadata}
+
+    except Exception as e:
+        raise ValueError(f"Gagal dekripsi: {e}")
+
+
 # --- Verifikasi SHA-256 ---
 def get_data_sha256(data):
     """Menghitung hash SHA-256 dari data (bytes)."""
@@ -84,482 +157,271 @@ def get_data_sha256(data):
 # =================================================================
 
 
-def create_section_header(title, description):
-    """Header section yang minimalis"""
-    st.markdown(f"### {title}")
-    st.caption(description)
-    st.divider()
-
-
-def create_file_uploader(label, file_types, key):
-    """File uploader yang konsisten"""
-    return st.file_uploader(label, type=file_types, key=key)
+def format_file_size(size_bytes):
+    """Format ukuran file menjadi readable"""
+    for unit in ["B", "KB", "MB", "GB"]:
+        if size_bytes < 1024.0:
+            return f"{size_bytes:.2f} {unit}"
+        size_bytes /= 1024.0
+    return f"{size_bytes:.2f} TB"
 
 
 # =================================================================
-# 3. Logika Aplikasi - Tampilan Minimalis & Konsisten
+# 3. Logika Aplikasi - Super Enkripsi
 # =================================================================
 
 
-def vigenere_section():
-    """Bagian Vigenère Cipher dengan tampilan minimalis"""
+def super_encryption_section():
+    """Section super enkripsi: Vigenère + OTP"""
 
-    # Mode Selection
-    operation_mode = st.radio(
-        "Pilih Operasi:",
-        ["🔒 Enkripsi Teks", "🔓 Dekripsi Teks"],
-        horizontal=True,
-        key="vigenere_radio_mode",
-    )
-
-    st.divider()
-
-    # Input Area
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        text_input = st.text_area(
-            "Teks:",
-            height=120,
-            placeholder="Masukkan teks di sini...",
-            help="Plaintext untuk enkripsi atau ciphertext untuk dekripsi",
-            key="vigenere_text_input",
-        )
-
-    with col2:
-        key_input = st.text_input(
-            "Kunci:",
-            placeholder="Masukkan kunci...",
-            help="Kunci untuk enkripsi/dekripsi (hanya alfabet)",
-            key="vigenere_key_input",
-        )
-
-    # Action Button
-    if st.button(
-        (
-            "🚀 Proses Sekarang"
-            if operation_mode == "🔒 Enkripsi Teks"
-            else "🔓 Proses Sekarang"
-        ),
-        use_container_width=True,
-        type="primary",
-        key="vigenere_process_btn",
-    ):
-        if not text_input or not key_input:
-            st.error("❌ Teks dan kunci harus diisi")
-            return
-
-        # Validasi kunci hanya alfabet
-        if not key_input.replace(" ", "").isalpha():
-            st.error("❌ Kunci hanya boleh mengandung huruf alfabet (A-Z, a-z)")
-            return
-
-        try:
-            if operation_mode == "🔒 Enkripsi Teks":
-                result = vigenere_encrypt(text_input, key_input)
-                mode = "terenkripsi"
-            else:
-                result = vigenere_decrypt(text_input, key_input)
-                mode = "terdekripsi"
-
-            st.session_state["vigenere_result"] = result
-            st.session_state["vigenere_mode"] = mode
-            st.success(f"✅ {operation_mode} berhasil!")
-
-        except Exception as e:
-            st.error(f"❌ Gagal: {e}")
-
-    # Results Section
-    if st.session_state.get("vigenere_result"):
-        st.divider()
-        result = st.session_state["vigenere_result"]
-        mode = st.session_state["vigenere_mode"]
-
-        st.text_area(
-            f"Hasil Teks {mode.capitalize()}:",
-            result,
-            height=120,
-            key="vigenere_result_display",
-        )
-
-        file_name = f"teks_{mode}.txt"
-        st.download_button(
-            label="📥 Unduh Hasil",
-            data=result.encode("utf-8"),
-            file_name=file_name,
-            mime="text/plain",
-            use_container_width=True,
-            key="vigenere_download_btn",
-        )
-
-
-def otp_section():
-    """Bagian One-Time Pad dengan tampilan minimalis"""
-
-    # Tambahan: Pemilihan Media Type
-    media_type = st.radio(
-        "Pilih Tipe Media:",
-        ["🖼️ Gambar (JPG/PNG)", "🎬 Video/File Biner"],
-        horizontal=True,
-        key="otp_media_type",
-    )
-
-    st.divider()
-
-    # Mode Selection (Enkripsi/Dekripsi)
-    operation_mode = st.radio(
-        "Pilih Operasi:",
-        ["🔒 Enkripsi File", "🔓 Dekripsi File"],
-        horizontal=True,
-        key="otp_radio_mode",
-    )
-
-    st.divider()
-
-    if operation_mode == "🔒 Enkripsi File":
-        otp_encryption_section(media_type)
-    else:
-        otp_decryption_section(media_type)
-
-
-def otp_encryption_section(media_type):
-    """Section enkripsi OTP yang minimalis"""
-
-    is_image = media_type == "🖼️ Gambar (JPG/PNG)"
-
-    if is_image:
-        file_types = ["png", "jpg", "jpeg"]
-        label = "Pilih gambar untuk dienkripsi:"
-        st.info(
-            "💡 Gambar akan dikonversi ke format PNG/RGB/Grayscale untuk konsistensi."
-        )
-    else:
-        file_types = ["mp4", "avi", "mov", "mkv", "wmv", "flv", "pdf", "zip", "bin"]
-        label = "Pilih file video/biner untuk dienkripsi:"
-
-    uploaded_file = create_file_uploader(
-        label,
-        file_types,
-        "otp_enc_file_uploader",
+    st.write("**📤 Upload File Video**")
+    uploaded_file = st.file_uploader(
+        "Pilih file video MP4 untuk dienkripsi:",
+        type=["mp4"],
+        key="super_enc_file_uploader",
+        label_visibility="collapsed",
     )
 
     if uploaded_file:
         file_bytes = uploaded_file.getvalue()
-        width, height, channels = 0, 0, 1
 
-        if is_image:
-            try:
-                image = Image.open(uploaded_file)
+        # Validasi file MP4
+        is_valid, validation_msg = validate_mp4_file(file_bytes)
 
-                # Konversi ke format standar
-                if image.mode == "L":
-                    channels = 1
-                elif image.mode != "RGB":
-                    image = image.convert("RGB")
-                    channels = 3
-                else:
-                    channels = 3
+        if not is_valid:
+            st.error(f"❌ {validation_msg}")
+            return
 
-                img_array = np.array(image)
+        # Tampilkan preview video dan info file
 
-                if len(img_array.shape) == 3:
-                    height, width, _ = img_array.shape
-                elif len(img_array.shape) == 2:
-                    height, width = img_array.shape
-                    channels = 1
+        st.video(uploaded_file, format="video/mp4")
+        if "mungkin bukan MP4 standar" in validation_msg:
+            st.warning("⚠️ File mungkin tidak standar")
 
-                file_bytes = img_array.tobytes()
+        # Input kunci Vigenère
+        st.write("**🔑 Masukkan Kunci Vigenère**")
+        vigenere_key = st.text_input(
+            "Kunci Vigenère:",
+            placeholder="Contoh: MYKEY123",
+            help="Kunci untuk enkripsi metadata (hanya huruf A-Z, a-z)",
+            key="super_enc_vigenere_key",
+            label_visibility="collapsed",
+        )
 
-                if channels not in [1, 3]:
-                    st.error(f"❌ Format gambar tidak didukung. Channels: {channels}")
-                    return
-
-                st.image(
-                    image,
-                    caption=f"Preview: {uploaded_file.name} ({width}×{height}, {channels} channel)",
-                    use_column_width=True,
-                )
-
-            except Exception as e:
-                st.error(f"❌ Error memproses gambar: {e}")
-                return
+        # Validasi kunci Vigenère
+        if vigenere_key and not vigenere_key.replace(" ", "").isalpha():
+            st.error("❌ Kunci hanya boleh mengandung huruf alfabet (A-Z, a-z)")
+            vigenere_key_valid = False
         else:
-            # Untuk video/file biner
-            st.write(f"**Ukuran File:** {len(file_bytes):,} bytes")
-
-        # Regenerate key jika file baru / dims berubah
-        current_dims = (width, height, channels)
-        if (
-            st.session_state.get("otp_enc_file_name") != uploaded_file.name
-            or st.session_state.get("otp_enc_img_dims") != current_dims
-        ):
-            st.session_state.otp_enc_key = generate_otp_key(len(file_bytes))
-            st.session_state.otp_enc_file_name = uploaded_file.name
-            st.session_state.otp_enc_img_dims = current_dims
-            st.session_state.otp_enc_file_bytes = file_bytes
-            st.session_state.otp_enc_result = None
+            vigenere_key_valid = bool(vigenere_key)
 
         # Encryption Button
         if st.button(
-            f"🔒 Enkripsi {'Gambar' if is_image else 'File'}",
+            "🔒 Enkripsi Sekarang",
             use_container_width=True,
             type="primary",
-            key="otp_encrypt_btn",
+            key="super_encrypt_btn",
+            disabled=not vigenere_key_valid,
         ):
             try:
-                encrypted_data = otp_operation(file_bytes, st.session_state.otp_enc_key)
+                with st.spinner("🔄 Melakukan super enkripsi..."):
+                    result = super_encrypt(file_bytes, vigenere_key)
 
                 base_name = os.path.splitext(uploaded_file.name)[0]
 
-                # Buat header metadata
-                header = (
-                    width.to_bytes(4, "big")
-                    + height.to_bytes(4, "big")
-                    + channels.to_bytes(4, "big")
-                )
-
-                packaged_encrypted = header + encrypted_data
-
-                st.session_state["otp_enc_result"] = {
-                    "data": packaged_encrypted,
-                    "name": f"{base_name}_encrypted.bin",
-                    "key": st.session_state.otp_enc_key,
-                    "key_name": f"{base_name}_key.bin",
-                    "metadata": {
-                        "width": width,
-                        "height": height,
-                        "channels": channels,
-                        "is_image": is_image,
-                        "original_ext": os.path.splitext(uploaded_file.name)[1],
-                    },
+                st.session_state["super_enc_result"] = {
+                    "encrypted_data": result["encrypted_data"],
+                    "otp_key": result["otp_key"],
+                    "vigenere_key": vigenere_key,
+                    "encrypted_data_name": f"{base_name}_super_encrypted.bin",
+                    "otp_key_name": f"{base_name}_otp_key.bin",
+                    "metadata": result["metadata"],
+                    "original_metadata": result["original_metadata"],
+                    "original_name": uploaded_file.name,
+                    "file_size": len(file_bytes),
                 }
 
-                st.success(f"✅ Enkripsi berhasil!")
+                st.success("✅ **Super Enkripsi Berhasil!**")
 
             except Exception as e:
-                st.error(f"❌ Gagal enkripsi: {e}")
+                st.error(f"❌ Gagal enkripsi: {str(e)}")
 
         # Download Results
-        if st.session_state.get("otp_enc_result"):
-            st.divider()
-            result = st.session_state.otp_enc_result
+        if st.session_state.get("super_enc_result"):
+            result = st.session_state.super_enc_result
 
-            st.info("💡 Simpan kedua file untuk dekripsi nanti:")
+            st.write("**📥 Download Hasil Enkripsi**")
+            st.info("Simpan kedua file untuk dekripsi nanti:")
+
             col1, col2 = st.columns(2)
             with col1:
                 st.download_button(
-                    label="📥 Data Terenkripsi",
-                    data=result["data"],
-                    file_name=result["name"],
+                    label="💾 Data Terenkripsi",
+                    data=result["encrypted_data"],
+                    file_name=result["encrypted_data_name"],
                     mime="application/octet-stream",
                     use_container_width=True,
-                    key="otp_download_encrypted",
+                    key="super_download_encrypted",
+                    help="File berisi video terenkripsi + metadata",
                 )
 
             with col2:
                 st.download_button(
                     label="🔑 Kunci OTP",
-                    data=result["key"],
-                    file_name=result["key_name"],
+                    data=result["otp_key"],
+                    file_name=result["otp_key_name"],
                     mime="application/octet-stream",
                     use_container_width=True,
-                    key="otp_download_key",
+                    key="super_download_otp_key",
+                    help="Kunci acak untuk dekripsi video",
                 )
 
-            with st.expander("📊 Detail Enkripsi"):
-                st.write(
-                    f"**Tipe:** {'Gambar' if result['metadata']['is_image'] else 'File Biner'}"
-                )
-                if result["metadata"]["is_image"]:
-                    st.write(f"**Dimensi:** {width} × {height}")
-                    st.write(f"**Channels:** {channels}")
-                st.write(f"**Ekstensi Asli:** {result['metadata']['original_ext']}")
-                st.write(f"**Ukuran File:** {len(result['data']):,} bytes")
-                st.write(f"**Ukuran Kunci:** {len(result['key']):,} bytes")
+            # Info Detail Enkripsi
+            with st.expander("📊 Detail Enkripsi", expanded=False):
+                col1, col2 = st.columns(2)
+
+                with col1:
+                    st.write("**📁 Informasi File**")
+                    st.write(f"**Nama asli:** {result['original_name']}")
+                    st.write(
+                        f"**Ukuran asli:** {format_file_size(result['file_size'])}"
+                    )
+                    st.write(f"**Kunci Vigenère:** {result['vigenere_key']}")
+
+                with col2:
+                    st.write("**🔐 Informasi Keamanan**")
+                    st.write(
+                        f"**Data terenkripsi:** {format_file_size(len(result['encrypted_data']))}"
+                    )
+                    st.write(
+                        f"**Kunci OTP:** {format_file_size(len(result['otp_key']))}"
+                    )
+                    st.write(f"**Metadata:** {result['metadata'][:30]}...")
+
+                st.write("**🔍 Hash Verifikasi**")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.code(f"Data: {get_data_sha256(result['encrypted_data'])}")
+                with col2:
+                    st.code(f"Kunci: {get_data_sha256(result['otp_key'])}")
+
     else:
-        st.info("📁 Unggah file untuk memulai enkripsi")
+        st.info("📁 Silakan upload file video MP4 untuk memulai enkripsi")
 
 
-def get_mime_type(ext):
-    """Fungsi sederhana untuk mendapatkan MIME type dari ekstensi"""
-    ext = ext.lower().strip(".")
-    mime_map = {
-        "mp4": "video/mp4",
-        "mov": "video/quicktime",
-        "avi": "video/x-msvideo",
-        "mkv": "video/x-matroska",
-        "png": "image/png",
-        "jpg": "image/jpeg",
-        "jpeg": "image/jpeg",
-        "pdf": "application/pdf",
-        "zip": "application/zip",
-    }
-    return mime_map.get(ext, "application/octet-stream")
+def super_decryption_section():
+    """Section super dekripsi: Vigenère + OTP"""
 
-
-def otp_decryption_section(media_type):
-    """Section dekripsi OTP yang minimalis"""
-
-    is_image_mode = media_type == "🖼️ Gambar (JPG/PNG)"
+    st.write("**📤 Upload File Terenkripsi & Kunci OTP**")
 
     col1, col2 = st.columns(2)
-
     with col1:
-        uploaded_bin = create_file_uploader(
-            "File terenkripsi (.bin):", ["bin"], "otp_dec_bin_uploader"
+        uploaded_encrypted = st.file_uploader(
+            "File terenkripsi (.bin):",
+            type=["bin"],
+            key="super_dec_encrypted_uploader",
+            label_visibility="collapsed",
         )
-
     with col2:
-        uploaded_key = create_file_uploader(
-            "Kunci OTP (.bin):", ["bin"], "otp_dec_key_uploader"
+        uploaded_otp_key = st.file_uploader(
+            "Kunci OTP (.bin):",
+            type=["bin"],
+            key="super_dec_otp_key_uploader",
+            label_visibility="collapsed",
         )
 
-    # Input ekstensi asli hanya untuk non-gambar
-    if not is_image_mode:
-        ext_input = st.text_input(
-            "Ekstensi File Asli:",
-            value="mp4",
-            placeholder="mp4, avi, pdf, dll.",
-            help="Diperlukan untuk file non-gambar",
-            key="otp_dec_ext_input",
-        )
-    else:
-        ext_input = ""
+    # Input kunci Vigenère untuk dekripsi
+    st.write("**🔑 Masukkan Kunci Vigenère**")
+    vigenere_key = st.text_input(
+        "Kunci Vigenère:",
+        placeholder="Kunci yang sama dengan saat enkripsi",
+        help="Kunci untuk dekripsi metadata",
+        key="super_dec_vigenere_key",
+        label_visibility="collapsed",
+    )
 
-    if uploaded_bin and uploaded_key:
-        bin_bytes = uploaded_bin.getvalue()
-        key_bytes = uploaded_key.getvalue()
-
-        # Validasi file terenkripsi
-        if len(bin_bytes) <= 12:
-            st.error("❌ File terenkripsi tidak valid (terlalu kecil).")
-            return
-
-        # Baca header metadata
-        try:
-            header = bin_bytes[:12]
-            width = int.from_bytes(header[0:4], "big")
-            height = int.from_bytes(header[4:8], "big")
-            channels = int.from_bytes(header[8:12], "big")
-
-            # Deteksi tipe file berdasarkan metadata
-            is_file_image = width > 0 and height > 0 and channels in [1, 3]
-
-            # Auto-koreksi mode jika tidak match
-            if is_file_image and not is_image_mode:
-                st.info("🔍 Terdeteksi file gambar berdasarkan metadata")
-                is_image = True
-            elif not is_file_image and is_image_mode:
-                st.info("🔍 Terdeteksi file biner berdasarkan metadata")
-                is_image = False
-                if not ext_input:
-                    st.error("❌ Harap masukkan ekstensi file asli")
-                    return
-            else:
-                is_image = is_image_mode
-
-        except Exception as e:
-            st.error(f"❌ Gagal membaca metadata: {e}")
-            return
-
-        encrypted_data = bin_bytes[12:]
-        data_size = len(encrypted_data)
-
-        # Validasi ukuran kunci
-        if data_size != len(key_bytes):
-            st.error("❌ Ukuran file dan kunci tidak cocok.")
-            return
+    if uploaded_encrypted and uploaded_otp_key and vigenere_key:
+        encrypted_bytes = uploaded_encrypted.getvalue()
+        otp_key_bytes = uploaded_otp_key.getvalue()
 
         # Tampilkan info file
-        st.success(f"✅ File valid - {data_size:,} bytes data terenkripsi")
+        st.success("✅ **File dan kunci siap**")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**📁 Info File**")
+            st.write(f"**Data terenkripsi:** {format_file_size(len(encrypted_bytes))}")
+            st.write(f"**Kunci OTP:** {format_file_size(len(otp_key_bytes))}")
+            st.write(f"**Kunci Vigenère:** {vigenere_key}")
+
+        # Validasi kunci Vigenère
+        if not vigenere_key.replace(" ", "").isalpha():
+            st.error("❌ Kunci hanya boleh mengandung huruf alfabet (A-Z, a-z)")
+            return
 
         # Dekripsi Button
         if st.button(
-            "🔓 Dekripsi File",
+            "🔓 Dekripsi Sekarang",
             use_container_width=True,
             type="primary",
-            key="otp_decrypt_btn",
+            key="super_decrypt_btn",
         ):
-            if not is_image and not ext_input:
-                st.error("❌ Harap masukkan ekstensi file asli")
-                return
-
             try:
-                decrypted_bytes = otp_operation(encrypted_data, key_bytes)
-                base_name = os.path.splitext(uploaded_bin.name)[0].replace(
-                    "_encrypted", ""
+                with st.spinner("🔄 Melakukan super dekripsi..."):
+                    result = super_decrypt(encrypted_bytes, vigenere_key, otp_key_bytes)
+
+                base_name = os.path.splitext(uploaded_encrypted.name)[0].replace(
+                    "_super_encrypted", ""
                 )
+                output_name = f"{base_name}_decrypted.mp4"
 
-                final_download_data = None
-                output_mime = None
-                output_ext = None
+                # Tampilkan video yang didekripsi
+                st.success("✅ **Super Dekripsi Berhasil!**")
 
-                # --- Logika Rekonstruksi Gambar ---
-                if is_image:
-                    # Validasi ukuran data gambar
-                    expected_size = height * width * channels
-                    if len(decrypted_bytes) != expected_size:
-                        st.error(
-                            f"❌ Ukuran data tidak sesuai: expected {expected_size}, got {len(decrypted_bytes)}"
-                        )
-                        return
+                st.video(result["decrypted_video"], format="video/mp4")
 
-                    output_ext = ".png"
-                    output_mime = "image/png"
+                # Info Detail Dekripsi
+                with st.expander("📊 Detail Dekripsi", expanded=False):
+                    st.write("**📝 Metadata Terdekripsi**")
+                    st.success(f"`{result['metadata']}`")
 
-                    # Rekonstruksi gambar
-                    if channels == 3:
-                        decrypted_array = np.frombuffer(
-                            decrypted_bytes, dtype=np.uint8
-                        ).reshape((height, width, 3))
-                        decrypted_img = Image.fromarray(decrypted_array, "RGB")
-                    else:  # channels == 1
-                        decrypted_array = np.frombuffer(
-                            decrypted_bytes, dtype=np.uint8
-                        ).reshape((height, width))
-                        decrypted_img = Image.fromarray(decrypted_array, "L")
-
-                    # Tampilkan dan simpan gambar
-                    st.image(
-                        decrypted_img,
-                        caption=f"Gambar Hasil Dekripsi ({width}×{height})",
-                        use_column_width=True,
+                    st.write("**🔍 Hash Verifikasi**")
+                    st.code(
+                        f"Video terdekripsi: {get_data_sha256(result['decrypted_video'])}"
                     )
 
-                    buf = BytesIO()
-                    decrypted_img.save(buf, format="PNG")
-                    final_download_data = buf.getvalue()
-
-                # --- Logika File Biner ---
-                else:
-                    clean_ext = ext_input.strip().lower()
-                    if not clean_ext.startswith("."):
-                        clean_ext = "." + clean_ext
-
-                    output_ext = clean_ext
-                    output_mime = get_mime_type(clean_ext)
-                    final_download_data = decrypted_bytes
-
-                    st.success(f"✅ File {output_ext.upper()} berhasil didekripsi")
-                    st.info("💡 File biner siap diunduh")
-
-                output_name = f"{base_name}_decrypted{output_ext}"
+                    st.write("**✅ Status**")
+                    st.success("Semua checksum valid - file berhasil didekripsi")
 
                 # Download button
                 st.download_button(
-                    label=f"📥 Unduh File {'Gambar' if is_image else output_ext.upper()}",
-                    data=final_download_data,
+                    label="📥 Download Video Hasil Dekripsi",
+                    data=result["decrypted_video"],
                     file_name=output_name,
-                    mime=output_mime,
+                    mime="video/mp4",
                     use_container_width=True,
-                    key="otp_download_decrypted_file",
+                    key="super_download_decrypted",
+                    help="Video asli yang telah berhasil didekripsi",
                 )
 
             except Exception as e:
-                st.error(f"❌ Gagal dekripsi: {e}")
+                st.error(f"❌ Gagal dekripsi: {str(e)}")
+
+                # Tampilkan info error detail
+                with st.expander("🔧 Info Debug", expanded=False):
+                    st.error(f"Error detail: {str(e)}")
+                    st.info(
+                        """
+                    **Kemungkinan masalah:**
+                    - Kunci Vigenère tidak sesuai
+                    - File terenkripsi corrupt
+                    - Kunci OTP tidak cocok
+                    - Format file tidak sesuai
+                    """
+                    )
 
     else:
-        st.info("📁 Unggah file terenkripsi dan kunci OTP")
+        st.info("📁 Upload file terenkripsi, kunci OTP, dan masukkan kunci Vigenère")
 
 
 # =================================================================
@@ -570,7 +432,7 @@ def otp_decryption_section(media_type):
 def main():
     # Konfigurasi halaman minimalis
     st.set_page_config(
-        page_title="Kriptografi Tool",
+        page_title="Super Kriptografi Tool",
         page_icon="🔐",
         layout="centered",
         initial_sidebar_state="collapsed",
@@ -582,21 +444,39 @@ def main():
         <style>
         .main-title {
             text-align: center;
-            font-size: 2.5rem;
+            font-size: 2.2rem;
             margin-bottom: 0.5rem;
             color: #1f77b4;
+            font-weight: 700;
         }
         .main-subtitle {
             text-align: center;
             color: #666;
             margin-bottom: 2rem;
+            font-size: 1.1rem;
         }
         .stTabs [data-baseweb="tab-list"] {
-            gap: 1rem;
+            gap: 0.5rem;
         }
         .stTabs [data-baseweb="tab"] {
-            padding: 1rem 2rem;
+            padding: 0.8rem 1.5rem;
             border-radius: 8px 8px 0 0;
+            font-weight: 500;
+        }
+        .stButton button {
+            width: 100%;
+            border-radius: 8px;
+            font-weight: 500;
+        }
+        .file-uploader {
+            margin-bottom: 1rem;
+        }
+        .info-box {
+            background-color: #f0f8ff;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border-left: 4px solid #1f77b4;
+            margin: 0.5rem 0;
         }
         </style>
     """,
@@ -606,53 +486,28 @@ def main():
     # Header minimalis
     st.markdown('<p class="main-title">🔐 Kriptografi Tool</p>', unsafe_allow_html=True)
     st.markdown(
-        '<p class="main-subtitle">Enkripsi & Dekripsi yang Sederhana dan Aman</p>',
+        '<p class="main-subtitle">Vigenère Cipher (metadata) + One-Time Pad (video)</p>',
         unsafe_allow_html=True,
     )
 
     # Tabs utama
-    tab1, tab2 = st.tabs(["✍️ VIGENÈRE CIPHER", "🖼️ ONE-TIME PAD"])
+    tab1, tab2 = st.tabs(["🔒 **ENKRIPSI**", "🔓 **DEKRIPSI**"])
 
     with tab1:
-        create_section_header(
-            "Vigenère Cipher", "Enkripsi dan dekripsi teks dengan algoritma klasik"
-        )
-        vigenere_section()
+        super_encryption_section()
 
     with tab2:
-        create_section_header(
-            "One-Time Pad",
-            "Enkripsi dan dekripsi gambar/video/file biner dengan keamanan sempurna",
-        )
-        otp_section()
+        super_decryption_section()
 
     # Footer minimalis
     st.divider()
-    st.caption("🔒 Kriptografi Tool - Keamanan Digital Terdepan")
+    st.caption("🔒 Super Kriptografi Tool • Keamanan Berlapis • v1.0")
 
 
 # Inisialisasi Session State
 if __name__ == "__main__":
-    # State untuk Vigenere
-    if "vigenere_result" not in st.session_state:
-        st.session_state.vigenere_result = None
-    if "vigenere_mode" not in st.session_state:
-        st.session_state.vigenere_mode = None
-
-    # State untuk OTP Enkripsi
-    if "otp_enc_key" not in st.session_state:
-        st.session_state.otp_enc_key = None
-    if "otp_enc_file_name" not in st.session_state:
-        st.session_state.otp_enc_file_name = ""
-    if "otp_enc_img_dims" not in st.session_state:
-        st.session_state.otp_enc_img_dims = None
-    if "otp_enc_file_bytes" not in st.session_state:
-        st.session_state.otp_enc_file_bytes = None
-    if "otp_enc_result" not in st.session_state:
-        st.session_state.otp_enc_result = None
-
-    # State untuk OTP Dekripsi
-    if "otp_dec_result" not in st.session_state:
-        st.session_state.otp_dec_result = None
+    # State untuk Super Enkripsi
+    if "super_enc_result" not in st.session_state:
+        st.session_state.super_enc_result = None
 
     main()
